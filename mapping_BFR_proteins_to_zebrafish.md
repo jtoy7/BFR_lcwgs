@@ -76,3 +76,87 @@ done < "$BLAST_OUT"
 echo "Mapping complete. See ${MAPPING_OUT}."
 
 ```
+
+
+This didn't work because the .faa file excludes the genes I need to blast (those that start with LOC). New approach below:
+
+
+### Download Danio rerio RefSeq proteins
+
+```{bash}
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/002/035/GCF_000002035.6_GRCz11/GCF_000002035.6_GRCz11_cds_from_genomic.fna.gz
+```
+
+### Make BLAST database for D. rerio proteins
+```{bash}
+module load ncbi-cli
+
+crun.ncbi-cli makeblastdb -in GCF_000002035.6_GRCz11_cds_from_genomic.fna -dbtype nucl
+```
+
+
+```
+#!/usr/bin/bash
+# run_BFR_to_DRE_mapping_v2.sh
+# A fully bash-based workflow to map query gene IDs to Danio rerio gene symbols.
+
+
+# ----- LOAD MODULE -----
+module load ncbi-cli
+
+# ----- CONFIGURATION -----
+# Input file containing gene list
+GENE_LIST="top_210_gene_list.txt"
+
+# Output file
+OUTPUT_FILE="BFR_to_DRE_mapping.tsv"
+
+# Reference database for Danio rerio
+BLAST_DB="./danio_rerio/GCF_000002035.6_GRCz11_cds_from_genomic.fna"
+
+# Prepare output file
+echo -e "Query_ID\tDANRE_NCBI_ID\tGene_Symbol" > $OUTPUT_FILE
+
+# ----- Process genes -----
+grep "^LOC" "$GENE_LIST" | while read -r LOC_ID; do
+    echo "Processing $LOC_ID..."
+
+    # Remove "LOC" prefix
+    CLEAN_ID=${LOC_ID#LOC}
+
+    # Fetch the nucleotide sequence from NCBI Datasets
+    crun.ncbi-cli datasets download gene gene-id "$CLEAN_ID" --include gene --filename "$LOC_ID.zip"
+    
+    # Unzip and extract FASTA file
+    unzip -o "$LOC_ID.zip" -d "$LOC_ID"
+    FASTA_FILE=$(find "$LOC_ID" -name "*.fna" | head -n 1)
+
+    if [ ! -f "$FASTA_FILE" ]; then
+        echo "Warning: No sequence found for $LOC_ID"
+        continue
+    fi
+
+    # Run BLAST against Danio rerio genome, keeping only the top hit
+    BLAST_RESULT=$(crun.ncbi-cli blastn -query "$FASTA_FILE" -db "$BLAST_DB" -outfmt "6 qseqid sseqid ssciname scomname pident length evalue bitscore stitle" -max_target_seqs 1 -num_threads 4 | head -n 1)
+
+    if [ -z "$BLAST_RESULT" ]; then
+        echo "Warning: No BLAST hit for $LOC_ID"
+        echo -e "$LOC_ID\tNo_Hit\tNo_Hit" >> $OUTPUT_FILE
+        continue
+    fi
+
+    # Extract relevant fields
+    NCBI_ID=$(echo "$BLAST_RESULT" | awk '{print $2}')
+
+    # Fetch gene symbol for the BLAST hit
+    GENE_SYMBOL=$(echo "$BLAST_RESULT" | sed -n 's/.*gene=\([^]]*\).*/\1/p')
+
+    # Append to output file
+    echo -e "$LOC_ID\t$NCBI_ID\t$GENE_SYMBOL" >> $OUTPUT_FILE
+
+    # Clean up temporary files
+    rm -rf "$LOC_ID" "$LOC_ID.zip"
+done
+
+echo "BLAST search completed. Results saved in $OUTPUT_FILE"
+```
