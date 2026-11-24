@@ -3,7 +3,7 @@
 # This script converts a list of NCBI gene accessions to KEGG KO identifiers.
 
 # Input file: one NCBI accession per line (without the "ncbi-geneid:" prefix)
-INPUT="top_210_genes_ncbi_accessions.txt"
+INPUT="top_207_genes_ncbi_accessions.txt"
 # Output file: tab-separated values: NCBI_accession <tab> KO_ID
 OUTPUT="ncbi_to_ko.tsv"
 
