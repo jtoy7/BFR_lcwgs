@@ -14,25 +14,24 @@ gff_genes <- read_tsv("GCF_029030835.1_ASM2903083v1_genomic_genes.gff", col_name
 colnames(gff_genes) <- c("seqid", "source", "type", "start", "end", "score", "strand", "phase", "attributes")
 
 
-# Create a function to determine SNP type
-determine_snp_type <- function(snp_pos, gene_start, gene_end) {
-  if (snp_pos >= gene_start & snp_pos <= gene_end) {
-    return("inside")
-  } else if (snp_pos >= gene_start - 200 & snp_pos < gene_start) {
-    return("upstream")
-  } else {
-    return("not_in_gene")
-  }
-}
 
-# Merge SNPs with gene data based on contig and position criteria
+# Merge SNPs with gene data, based on contig and position criteria and accounting for gene strand
+# Simultaneously classify SNP types
 snps_mapped <- snps %>%
   left_join(gff_genes, by = c("refseq_contig" = "seqid")) %>%
-  filter(pos >= start - 200 & pos <= end) %>%
   mutate(
-    snp_type = mapply(determine_snp_type, pos, start, end),
+    snp_type = case_when(
+      pos >= start & pos <= end ~ "inside",
+      strand == "+" &
+        pos >= start - 200 & pos < start ~ "upstream",
+      strand == "-" &
+        pos > end & pos <= end + 200 ~ "upstream",
+      TRUE ~ "not_in_gene"
+    ),
     gene_length = end - start
-  ) 
+  ) %>%
+  filter(snp_type != "not_in_gene")
+
 
 # Create function to split key-value pairs into a named list
 parse_attributes <- function(attr_string) {
@@ -50,25 +49,46 @@ snps_mapped_parsed <- snps_mapped %>%
 # Count number of SNPs inside vs. upstream of genes
 snps_mapped_parsed %>% count(snp_type)
 
-## 11,814 SNPs mapped to genes or 200 bp upstream of genes (11,675 inside & 139 upstream)
+## 11,802 SNPs mapped to genes or 200 bp upstream of genes (11,675 inside & 127 upstream)
 
 
 # Write the mapped SNP table to a file
 write_tsv(snps_mapped_parsed, "snps_mapped_to_ncbi_annot_genes.tsv")
 
 
-# Remove consecutive duplicates (multiple SNPs in the same gene annotation) to get list of unique candidate genes
+# Retain only the highest-XtX SNP for each gene to get list of unique candidate genes
 snps_mapped_parsed_uniq <- snps_mapped_parsed %>%
-  arrange(Dbxref, desc(XtXst)) %>%  # Ensure data frame is sorted by refseq_contig, then pos
-  mutate(prev_geneid = lag(Dbxref)) %>%  # Create a new column with the previous row's value of "Name"
-  filter(Dbxref != prev_geneid | is.na(prev_geneid)) %>%  # Keep only the first row of consecutive duplicates
-  dplyr::select(-prev_geneid)  # Remove the helper column
+  arrange(Dbxref, desc(XtXst)) %>%
+  distinct(Dbxref, .keep_all = TRUE)
 
 # Count number of genes with SNPs inside vs. upstream of genes
-snps_mapped_parsed_uniq %>% count(snp_type)
+snps_mapped_parsed_uniq %>% 
+  count(snp_type) %>% 
+  mutate(percent = 100 * n / sum(n))
 
-## 5,691 SNPs mapped to genes or 200 bp upstream of genes (5,575 inside & 116 upstream)
+## 5,678 SNPs mapped to genes or 200 bp upstream of genes (5,578 inside & 100 upstream)
 
+
+# Count genes with at least one intragenic SNP, irrespective of which SNP had the highest XtX
+snps_mapped_parsed %>%
+  group_by(Dbxref) %>%
+  summarise(
+    has_inside = any(snp_type == "inside"),
+    has_upstream = any(snp_type == "upstream"),
+    .groups = "drop"
+  ) %>%
+  summarise(
+    total_genes = n(),
+    genes_with_inside = sum(has_inside),
+    genes_only_upstream = sum(!has_inside & has_upstream),
+    genes_only_inside = sum(has_inside & !has_upstream),
+    genes_with_both = sum(has_inside & has_upstream),
+    pct_with_inside = 100 * mean(has_inside)
+  )
+
+# total_genes genes_with_inside genes_only_upstream genes_only_inside genes_with_both pct_with_inside
+# <int>             <int>               <int>             <int>           <int>           <dbl>
+#  5678              5602                  76              5554              48            98.7
 
 # Write the deduplicated mapped SNP table to a file
 write_tsv(snps_mapped_parsed_uniq, "snps_mapped_to_ncbi_annot_genes_uniq.tsv")
@@ -88,7 +108,7 @@ write_tsv(gene_len_table, "uniq_candidate_genes_ncbi_annot_with_lengths.tsv")
 
 
 
-### Analyze and plot relationsip between SNP number and gene length
+### Analyze and plot relationship between SNP number and gene length
 
 # Summarize data to count SNPs per gene
 snp_counts_per_gene <- snps_mapped_parsed %>% 
@@ -116,7 +136,7 @@ p_model <- glm(snp_count ~ gene_length, family = poisson, data = snp_counts_per_
   library(performance)
   check_overdispersion(p_model)  # Replace 'model' with your GLM object
   
-  # dispersion ratio is 1.363 which is greater than 1 and p-value < 0.001 so data is overdispersed. Poisson model not a good fit.
+  # dispersion ratio is 1.361 which is greater than 1 and p-value < 0.001 so data is overdispersed. Poisson model not a good fit.
 
   
 # try negative binomial model
@@ -128,14 +148,14 @@ p_model <- glm(snp_count ~ gene_length, family = poisson, data = snp_counts_per_
   # check for overdispersion
   check_overdispersion(nb_model)
   
-  # dispersion ratio = 1.567, p-value = 0.008; More overdispersed than Poisson model
+# dispersion ratio = 1.556, p-value = 0.024; More overdispersed than Poisson model
   
 # compare models
   AIC(p_model, nb_model)
 
-  #         df      AIC
-  #p_model   2 19417.37
-  #nb_model  3 18988.74
+  # df              AIC
+  # p_model   2 19379.1372209469
+  # nb_model  3 18953.8723014400
   
   # simulate and visually check residuals of both models
   library(DHARMa)
@@ -156,7 +176,7 @@ p_model <- glm(snp_count ~ gene_length, family = poisson, data = snp_counts_per_
   # Root function model
   root_model <- glm(snp_count ~ I(sqrt(gene_length)), data = snp_counts_per_gene)
   summary(root_model)
-  check_overdispersion(root_model) # no overdispersion detected! (ratio = 1.001)
+  check_overdispersion(root_model) # no overdispersion detected! (ratio = 1.001, p-value = 0.952)
   root_res <- simulateResiduals(root_model, plot = TRUE)
   
   # linear model
@@ -187,12 +207,13 @@ snp_counts_per_gene <- snps_mapped_parsed %>%
 
 # Plot just the data
 ggplot(snp_counts_per_gene) +
-  geom_point(aes(x = gene_length, y = snp_count, alpha = 0.3)) +
+  geom_point(aes(x = gene_length, y = snp_count), alpha = 0.3) +
   labs(title = "SNP Count vs Gene Length", x = "Gene Length", y = "SNP Count") +
   theme_bw()
 
 
 # With model and labels
+library(ggrepel)
 
 ggplot(snp_counts_per_gene) +
   geom_point(aes(x = gene_length, y = snp_count, color = outlier), alpha = 0.2) +
@@ -240,7 +261,7 @@ ggplot(snp_counts_per_gene) +
   
 ggplot(snp_counts_per_gene) +
   geom_point(aes(x = gene_length, y = snps_per_gene_normalized), alpha = 0.2) +
-  ylim(c(0, 0.0025)) +
+  ylim(c(0, 0.0025))
   
   
 # Try to fit a hyperbolic model
