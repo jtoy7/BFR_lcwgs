@@ -401,7 +401,8 @@ library(ggrepel)
 ggplot(snp_counts_per_gene) +
   geom_point(aes(x = gene_length, y = snp_count, color = outlier), alpha = 0.2) +
   scale_color_manual(values = c("black", "red")) +  # Black for non-outliers, red for outliers
-  geom_line(aes(x = gene_length, y = y_pred), color = "blue", linewidth = 1) + # Model fit
+  geom_smooth(aes(x = gene_length, y = snp_count)) +
+  geom_line(aes(x = gene_length, y = y_pred), color = "blue", linewidth = 1, linetype = "dashed") + # Model fit
   #geom_text(data = filter(snp_counts_per_gene, outlier==TRUE), aes(x = gene_length, y = snp_count, label = Name), size = 2, color = "red") +  # Labels for outliers
   geom_text_repel(
     data = filter(snp_counts_per_gene, outlier == TRUE) %>% arrange(desc(residuals)) %>% slice_head(n = 30),  # Only label first 30 outliers
